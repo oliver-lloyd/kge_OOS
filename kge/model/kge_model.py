@@ -2,7 +2,7 @@ import importlib
 import tempfile
 from collections import OrderedDict
 
-from torch import Tensor
+from torch import Tensor, rand
 import torch.nn
 import numpy as np
 import os
@@ -388,6 +388,9 @@ class KgeModel(KgeBase):
                 init_for_load_only=init_for_load_only,
             )
 
+            self.psi = self._entity_embedder.psi
+            self.half_psi = self._entity_embedder.half_psi
+
             #: Embedder used for relations
             num_relations = dataset.num_relations()
             self._relation_embedder = KgeEmbedder.create(
@@ -660,7 +663,7 @@ class KgeModel(KgeBase):
     def get_scorer(self) -> RelationalScorer:
         return self._scorer
 
-    def score_spo(self, s: Tensor, p: Tensor, o: Tensor, direction=None) -> Tensor:
+    def score_spo(self, s: Tensor, p: Tensor, o: Tensor, direction=None, eval=False) -> Tensor:
         r"""Compute scores for a set of triples.
 
         `s`, `p`, and `o` are vectors of common size :math:`n`, holding the indexes of
@@ -674,12 +677,14 @@ class KgeModel(KgeBase):
         score of triple :math:`(s_i, p_i, o_i)`.
 
         """
-        s = self.get_s_embedder().embed(s)
+    
+        psi_roll = rand(1) if not eval else 1.0
+        s = self.get_s_embedder().aggregate_bunch(s) if self.psi >= psi_roll > self.half_psi else self.get_s_embedder().embed(s)
         p = self.get_p_embedder().embed(p)
-        o = self.get_o_embedder().embed(o)
+        o = self.get_o_embedder().aggregate_bunch(o) if self.half_psi >= psi_roll else self.get_o_embedder().embed(o)
         return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
 
-    def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None) -> Tensor:
+    def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None, eval=False) -> Tensor:
         r"""Compute scores for triples formed from a set of sp-pairs and all (or a subset of the) objects.
 
         `s` and `p` are vectors of common size :math:`n`, holding the indexes of the
@@ -692,16 +697,17 @@ class KgeModel(KgeBase):
         If `o` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        s = self.get_s_embedder().embed(s)
+        psi_roll = rand(1) if not eval else 1.0
+        s = self.get_s_embedder().aggregate_bunch(s) if self.psi >= psi_roll > self.half_psi else self.get_s_embedder().embed(s)
         p = self.get_p_embedder().embed(p)
         if o is None:
             o = self.get_o_embedder().embed_all()
         else:
-            o = self.get_o_embedder().embed(o)
+            o = self.get_o_embedder().aggregate_bunch(o) if self.half_psi >= psi_roll else self.get_o_embedder().embed(o)
 
         return self._scorer.score_emb(s, p, o, combine="sp_")
 
-    def score_po(self, p: Tensor, o: Tensor, s: Tensor = None) -> Tensor:
+    def score_po(self, p: Tensor, o: Tensor, s: Tensor = None, eval=False) -> Tensor:
         r"""Compute scores for triples formed from a set of po-pairs and (or a subset of the) subjects.
 
         `p` and `o` are vectors of common size :math:`n`, holding the indexes of the
@@ -714,17 +720,17 @@ class KgeModel(KgeBase):
         If `s` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-
+        psi_roll = rand(1) if not eval else 1.0
         if s is None:
             s = self.get_s_embedder().embed_all()
         else:
-            s = self.get_s_embedder().embed(s)
-        o = self.get_o_embedder().embed(o)
+            s = self.get_s_embedder().aggregate_bunch(s) if self.psi >= psi_roll > self.half_psi else self.get_s_embedder().embed(s)
+        o = self.get_o_embedder().aggregate_bunch(o) if self.half_psi >= psi_roll else self.get_o_embedder().embed(o)
         p = self.get_p_embedder().embed(p)
 
         return self._scorer.score_emb(s, p, o, combine="_po")
 
-    def score_so(self, s: Tensor, o: Tensor, p: Tensor = None) -> Tensor:
+    def score_so(self, s: Tensor, o: Tensor, p: Tensor = None, eval=False) -> Tensor:
         r"""Compute scores for triples formed from a set of so-pairs and all (or a subset of the) relations.
 
         `s` and `o` are vectors of common size :math:`n`, holding the indexes of the
@@ -737,8 +743,9 @@ class KgeModel(KgeBase):
         If `p` is not None, it is a vector holding the indexes of the relations to score.
 
         """
-        s = self.get_s_embedder().embed(s)
-        o = self.get_o_embedder().embed(o)
+        psi_roll = rand(1) if not eval else 1.0
+        s = self.get_s_embedder().aggregate_bunch(s) if self.psi >= psi_roll > self.half_psi else self.get_s_embedder().embed(s)
+        o = self.get_o_embedder().aggregate_bunch(o) if self.half_psi >= psi_roll else self.get_o_embedder().embed(o)
         if p is None:
             p = self.get_p_embedder().embed_all()
         else:
@@ -747,7 +754,7 @@ class KgeModel(KgeBase):
         return self._scorer.score_emb(s, p, o, combine="s_o")
 
     def score_sp_po(
-        self, s: Tensor, p: Tensor, o: Tensor, entity_subset: Tensor = None
+        self, s: Tensor, p: Tensor, o: Tensor, entity_subset: Tensor = None, eval=False
     ) -> Tensor:
         r"""Combine `score_sp` and `score_po`.
 
@@ -766,10 +773,10 @@ class KgeModel(KgeBase):
         holds the score for triple :math:`(e_{j-E}, p_i, o_i)`.
 
         """
-
-        s = self.get_s_embedder().embed(s)
+        psi_roll = rand(1) if not eval else 1.0
+        s = self.get_s_embedder().aggregate_bunch(s) if self.psi >= psi_roll > self.half_psi else self.get_s_embedder().embed(s)
         p = self.get_p_embedder().embed(p)
-        o = self.get_o_embedder().embed(o)
+        o = self.get_o_embedder().aggregate_bunch(o) if self.half_psi >= psi_roll else self.get_o_embedder().embed(o)
         if self.get_s_embedder() is self.get_o_embedder():
             if entity_subset is not None:
                 all_entities = self.get_s_embedder().embed(entity_subset)
