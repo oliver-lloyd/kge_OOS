@@ -82,3 +82,7 @@ lookup_embedder:
 
   # Will be deprecated.
   round_dim_to: []
+
+  # Kazemi OOS parameters
+  psi: 0.0
+  neighbour_edgelist_file: ''

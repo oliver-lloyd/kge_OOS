@@ -1,4 +1,4 @@
-from torch import Tensor
+from torch import Tensor, rand
 import torch.nn
 import torch.nn.functional
 
@@ -8,7 +8,9 @@ from kge.model import KgeEmbedder
 from kge.misc import round_to_points
 
 from typing import List
+from os import path
 
+from time import time
 
 class LookupEmbedder(KgeEmbedder):
     def __init__(
@@ -44,6 +46,23 @@ class LookupEmbedder(KgeEmbedder):
         self._embeddings = torch.nn.Embedding(
             self.vocab_size, self.dim, sparse=self.sparse,
         )
+
+        # Kazemi OOS parameters
+        self.psi = self.get_option("psi")
+        if self.psi <= 0:
+            self.psi = None
+        else:
+            self.half_psi = self.psi / 2
+            self.neighbour_edge_path = self.get_option("neighbour_edgelist_file")
+            neighbour_edgelist = torch.load(path.join(self.dataset.folder, self.neighbour_edge_path))
+            self.neighbour_adj = torch.sparse_coo_tensor(
+                neighbour_edgelist.T,
+                size = (self.dataset.num_entities(), self.dataset.num_entities()), 
+                values=torch.ones(len(neighbour_edgelist))
+            ).to(self._embeddings.weight.device)
+            self.agg_candidates = set(neighbour_edgelist.numpy().T[0])
+            self.config.log(f'Found psi value: {self.psi}')
+            self.config.log(f'Created sparse neighbour adjacency of shape: {self.neighbour_adj.shape}')
 
         if not init_for_load_only:
             # initialize weights
@@ -92,6 +111,34 @@ class LookupEmbedder(KgeEmbedder):
         ] = pretrained_embedder.embed(torch.from_numpy(pretrained_intersect_ind)).to(
             self._embeddings.weight.device
         )
+
+    def _aggregate(self, ind):
+        neighbours = self.neighbour_adj[ind]._indices().flatten().to(self._embeddings.weight.device)
+        neighbour_vecs = self.embed(neighbours)
+        aggs = neighbour_vecs.mean(dim=0)
+        return aggs
+
+    def aggregate_bunch(self, indexes: Tensor) -> Tensor:
+        agg_bools = [ind.item() in self.agg_candidates for ind in indexes]
+        if not any(agg_bools):
+            return self.embed(indexes)
+        else:
+            # Load regular embeddings
+            embeds = self.embed(indexes)
+
+            # Perform aggregations
+            #aggregations = agg_nodes.apply_(self._aggregate) # Would rather use .apply to aggregate but doesnt work on gpu
+            agg_nodes = indexes[agg_bools]
+            aggregations = torch.concat(
+                [self._aggregate(node_to_agg) for node_to_agg in agg_nodes]
+            ).view(
+                sum(agg_bools), embeds.shape[-1]
+            )
+
+            # Insert aggregations in place of embeds for target nodes
+            embeds[agg_bools] = aggregations
+
+            return self._postprocess(embeds)
 
     def embed(self, indexes: Tensor) -> Tensor:
         return self._postprocess(self._embeddings(indexes.long()))
